@@ -1,0 +1,4 @@
+geometry_msgs/Point[] waypoints
+---
+bool feasible
+float64 cost

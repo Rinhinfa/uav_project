@@ -1,0 +1,22 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>orchard_bringup</name>
+  <version>0.1.0</version>
+  <description>Bringup launch and shared parameters for orchard project.</description>
+  <maintainer email="liaw@example.com">liaw</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+  <exec_depend>orchard_ego_bridge</exec_depend>
+  <exec_depend>orchard_sim</exec_depend>
+  <exec_depend>orchard_task_allocation</exec_depend>
+  <exec_depend>orchard_traj_minco</exec_depend>
+  <exec_depend>orchard_evaluation</exec_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

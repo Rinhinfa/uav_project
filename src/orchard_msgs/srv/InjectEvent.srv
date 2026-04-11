@@ -1,0 +1,4 @@
+MissionEvent event
+---
+bool accepted
+string message

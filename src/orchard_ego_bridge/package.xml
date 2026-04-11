@@ -1,0 +1,19 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>orchard_ego_bridge</name>
+  <version>0.1.0</version>
+  <description>EgoPlanner bridge and planning arbitrator for ROS2 Jazzy.</description>
+  <maintainer email="liaw@example.com">liaw</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>geometry_msgs</depend>
+  <depend>nav_msgs</depend>
+  <depend>rclcpp</depend>
+  <depend>std_msgs</depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

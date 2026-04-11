@@ -1,0 +1,6 @@
+Task[] tasks
+UavState[] uav_states
+bool incremental_only
+---
+uint64 mission_id
+TaskAllocation[] allocations

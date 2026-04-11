@@ -1,0 +1,10 @@
+# Ignore everything by default
+*
+
+# But keep the gitignore file itself
+!/.gitignore
+
+# Keep source code
+!/src/
+!/src/**
+!/README.md

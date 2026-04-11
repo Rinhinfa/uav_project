@@ -1,0 +1,11 @@
+/**:
+  ros__parameters:
+    uav_model: p450_like
+    mass_kg: 1.5
+    arm_length_m: 0.225
+    max_speed_mps: 9.0
+    max_acc_mps2: 4.5
+    battery_capacity_wh: 160.0
+    rtl_battery_threshold_percent: 20.0
+    planner_update_hz: 10.0
+    task_allocator_hz: 0.5

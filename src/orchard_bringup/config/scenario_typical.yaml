@@ -1,0 +1,19 @@
+scenario_name: typical
+uav_count: 3
+rows: 8
+trees_per_row: 24
+events:
+  # t≈180s 完成全场巡检；LOW_BATTERY 触发重新规划，让两架继续接管剩余任务
+  - t: 110
+    type: LOW_BATTERY
+    uav_id: uav_2
+  # 新增紧急任务，测试动态调度延迟
+  - t: 160
+    type: NEW_TASK
+    task:
+      id: 9001
+      location:
+        x: 6.0
+        y: -4.0
+        z: 3.0
+      priority: 3

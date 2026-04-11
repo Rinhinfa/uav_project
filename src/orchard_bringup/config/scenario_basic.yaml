@@ -1,0 +1,5 @@
+scenario_name: basic
+uav_count: 3
+rows: 8
+trees_per_row: 24
+events: []

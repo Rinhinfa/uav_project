@@ -1,0 +1,30 @@
+scenario_name: stress
+uav_count: 4
+rows: 10
+trees_per_row: 30
+events:
+  # 10×30 任务、4 架无人机、1.2 m/s → 全程约 240s
+  - t: 60
+    type: COMM_LOSS
+    uav_id: uav_1
+  - t: 110
+    type: NEW_TASK
+    task:
+      id: 9101
+      location:
+        x: 9.0
+        y: 5.0
+        z: 3.0
+      priority: 3
+  - t: 155
+    type: UAV_FAILURE
+    uav_id: uav_3
+  - t: 200
+    type: NEW_TASK
+    task:
+      id: 9102
+      location:
+        x: -8.0
+        y: -7.0
+        z: 3.0
+      priority: 4
