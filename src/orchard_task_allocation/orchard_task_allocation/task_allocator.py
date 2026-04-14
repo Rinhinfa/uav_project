@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 import json
 import math
-from typing import Dict, List, Any
+from typing import Any, Dict, List, Tuple
 
+from geometry_msgs.msg import PoseArray
 import rclpy
 from geometry_msgs.msg import Point, PoseStamped
 from nav_msgs.msg import Path
@@ -32,9 +33,17 @@ class TaskAllocator(Node):
         self.declare_parameter("tasks_per_row", 24)
         self.declare_parameter("task_row_spacing", 5.0)
         self.declare_parameter("task_col_spacing", 3.0)
-        self.declare_parameter("task_z", 3.0)
+        # 巡检在树冠侧方垄沟、低空；跨行/大跳变由 gz_path_follower 爬升至 transit_z
+        self.declare_parameter("task_z", 2.0)
+        self.declare_parameter("landing_z", 0.25)
+        self.declare_parameter("transit_z", 3.85)
+        self.declare_parameter("uav_speed_mps", 1.2)
+        self.declare_parameter("max_flight_time_sec", 1800.0)  # 30 min
+        self.declare_parameter("usable_flight_ratio", 0.9)
+        self.declare_parameter("zone_bias_weight", 0.35)
 
         self._uav_states: Dict[str, Dict[str, Any]] = {}
+        self._uav_home: Dict[str, Tuple[float, float]] = {}
         self._tasks: List[Dict[str, Any]] = []
         self._mission_id = 0
         self._needs_replan = True
@@ -44,6 +53,7 @@ class TaskAllocator(Node):
         self._coarse_path_pub = self.create_publisher(Path, "/planner/coarse_waypoints", 10)
         self._mission_pub = self.create_publisher(UInt64, "/allocation/mission_id", 10)
         self.create_subscription(String, "/fleet/states_json", self._on_states, 10)
+        self.create_subscription(PoseArray, "/sim/spawn_poses", self._on_spawn_poses, _TRANSIENT_QOS)
         self.create_subscription(String, "/scheduler/event_in", self._on_event, 10)
         self.create_service(Trigger, "/scheduler/reallocate_tasks", self._on_reallocate)
         self.create_timer(1.0 / float(self.get_parameter("timer_hz").value), self._periodic_allocate)
@@ -59,15 +69,27 @@ class TaskAllocator(Node):
         y_offset = -0.5 * (rows - 1) * row_spacing
         x_offset = -0.5 * (cols - 1) * col_spacing
         tid = 1
+        half_row = 0.5 * row_spacing
         for row in range(rows):
-            y = y_offset + row * row_spacing
+            y_tree = y_offset + row * row_spacing
+            # 航点放在相邻树行之间的垄沟中心（非树顶）：与树干保持约半行距，避免贴树冠
+            if rows <= 1:
+                y_task = y_tree
+            elif row < rows - 1:
+                y_task = y_tree + half_row
+            else:
+                y_task = y_tree - half_row
             for col in range(cols):
                 t = {
                     "id": tid,
                     "priority": 2 if col % 6 == 0 else 1,
                     "task_type": "scan",
                     "deadline_sec": 120.0 if col % 6 == 0 else 240.0,
-                    "location": {"x": x_offset + col * col_spacing, "y": y, "z": task_z},
+                    "location": {
+                        "x": x_offset + col * col_spacing,
+                        "y": y_task,
+                        "z": task_z,
+                    },
                 }
                 tid += 1
                 self._tasks.append(t)
@@ -78,7 +100,17 @@ class TaskAllocator(Node):
         except json.JSONDecodeError:
             return
         self._uav_states = {s["uav_id"]: s for s in payload.get("states", [])}
+        for uid, state in self._uav_states.items():
+            if uid not in self._uav_home:
+                self._uav_home[uid] = (float(state.get("x", 0.0)), float(state.get("y", 0.0)))
         if not self._has_plan and self._uav_states:
+            self._needs_replan = True
+
+    def _on_spawn_poses(self, msg: PoseArray) -> None:
+        for i, pose in enumerate(msg.poses):
+            uid = f"uav_{i+1}"
+            self._uav_home[uid] = (float(pose.position.x), float(pose.position.y))
+        if self._uav_home:
             self._needs_replan = True
 
     def _on_event(self, msg: String) -> None:
@@ -141,47 +173,125 @@ class TaskAllocator(Node):
         self._publish_coarse_path(result)
 
     def _compute_allocations(self, tasks: List[Dict[str, Any]], uav_states: List[Dict[str, Any]], incremental_only: bool) -> Dict[str, Any]:
-        distance_weight = float(self.get_parameter("distance_weight").value)
-        row_weight = float(self.get_parameter("row_bias_weight").value)
         algorithm_mode = str(self.get_parameter("algorithm_mode").value).lower()
+        transit_z = float(self.get_parameter("transit_z").value)
+        landing_z = float(self.get_parameter("landing_z").value)
+        speed = float(self.get_parameter("uav_speed_mps").value)
+        max_time = float(self.get_parameter("max_flight_time_sec").value)
+        usable_ratio = float(self.get_parameter("usable_flight_ratio").value)
+        zone_bias = float(self.get_parameter("zone_bias_weight").value)
+        max_distance = max(10.0, speed * max_time * usable_ratio)
 
         pool = [t for t in tasks]
         healthy_uavs = [s for s in uav_states if s.get("healthy", False) and float(s.get("battery_percent", 0.0)) > 10.0]
         if not healthy_uavs:
             healthy_uavs = uav_states
-        mapping: Dict[str, List[Dict[str, Any]]] = {s["uav_id"]: [] for s in healthy_uavs}
-        row_centers = {s["uav_id"]: float(s["y"]) for s in healthy_uavs}
+        routes: Dict[str, List[Dict[str, Any]]] = {s["uav_id"]: [] for s in healthy_uavs}
+        route_cost: Dict[str, float] = {s["uav_id"]: 0.0 for s in healthy_uavs}
+        current_xy: Dict[str, Tuple[float, float]] = {
+            s["uav_id"]: (float(s.get("x", 0.0)), float(s.get("y", 0.0))) for s in healthy_uavs
+        }
+        sorted_uids = sorted(routes.keys())
+        ys = [float(t["location"]["y"]) for t in pool] if pool else [0.0]
+        y_min, y_max = min(ys), max(ys)
+        span = max(1e-3, y_max - y_min)
+        zone_center: Dict[str, float] = {}
+        for i, uid in enumerate(sorted_uids):
+            ratio = (i + 0.5) / max(1, len(sorted_uids))
+            zone_center[uid] = y_min + ratio * span
 
-        sort_key = (lambda x: x["priority"]) if algorithm_mode != "baseline" else (lambda x: x["id"])
-        for task in sorted(pool, key=sort_key, reverse=(algorithm_mode != "baseline")):
-            best_uav = None
-            best_cost = float("inf")
+        # 优先高优先级任务，兼顾近邻，减少总里程
+        remaining = sorted(
+            pool,
+            key=lambda t: (int(t.get("priority", 1)), -float(t["location"]["x"])),
+            reverse=True,
+        )
+
+        def _xy(task: Dict[str, Any]) -> Tuple[float, float]:
+            loc = task["location"]
+            return float(loc["x"]), float(loc["y"])
+
+        while remaining:
+            assigned_any = False
             for uav in healthy_uavs:
-                dx = float(task["location"]["x"]) - float(uav["x"])
-                dy = float(task["location"]["y"]) - float(uav["y"])
-                base_dist = math.hypot(dx, dy)
-                row_bias = abs(float(task["location"]["y"]) - row_centers[uav["uav_id"]])
-                score = base_dist if algorithm_mode == "baseline" else distance_weight * base_dist + row_weight * row_bias
-                if incremental_only:
-                    score *= 1.05
-                if score < best_cost:
-                    best_cost = score
-                    best_uav = uav["uav_id"]
-            mapping[best_uav].append(task)
+                uid = uav["uav_id"]
+                if not remaining:
+                    break
+                cx, cy = current_xy[uid]
+                hx, hy = self._uav_home.get(uid, (cx, cy))
+                best_idx = -1
+                best_score = float("inf")
+                for i, task in enumerate(remaining):
+                    tx, ty = _xy(task)
+                    to_task = math.hypot(tx - cx, ty - cy)
+                    to_home = math.hypot(tx - hx, ty - hy)
+                    projected = route_cost[uid] + to_task + to_home
+                    if projected > max_distance:
+                        continue
+                    zone_pen = abs(ty - zone_center.get(uid, ty))
+                    score = to_task + zone_bias * zone_pen - 0.35 * float(task.get("priority", 1))
+                    if incremental_only:
+                        score *= 1.03
+                    if score < best_score:
+                        best_score = score
+                        best_idx = i
+                if best_idx < 0:
+                    continue
+                task = remaining.pop(best_idx)
+                tx, ty = _xy(task)
+                route_cost[uid] += math.hypot(tx - cx, ty - cy)
+                current_xy[uid] = (tx, ty)
+                routes[uid].append(task)
+                assigned_any = True
+            if not assigned_any:
+                break
 
         self._mission_id += 1
         allocations = []
-        for uav_id, assigned in mapping.items():
-            assigned_sorted = sorted(assigned, key=lambda t: (round(float(t["location"]["y"]), 1), float(t["location"]["x"])))
+        for uav_id, assigned in routes.items():
+            sx = float(self._uav_states.get(uav_id, {}).get("x", 0.0))
+            sy = float(self._uav_states.get(uav_id, {}).get("y", 0.0))
+            hx, hy = self._uav_home.get(uav_id, (sx, sy))
+            route = self._optimize_route_nearest_neighbor(assigned, sx, sy)
+            waypoints = [dict(t["location"]) for t in route]
+            # 完成巡检后返航并降落
+            waypoints.append({"x": hx, "y": hy, "z": transit_z})
+            waypoints.append({"x": hx, "y": hy, "z": landing_z})
             allocations.append(
                 {
                     "uav_id": uav_id,
-                    "task_ids": [int(t["id"]) for t in assigned_sorted],
-                    "coarse_waypoints": [t["location"] for t in assigned_sorted],
-                    "estimated_cost": self._estimate_cost(uav_id, assigned_sorted),
+                    "task_ids": [int(t["id"]) for t in route],
+                    "coarse_waypoints": waypoints,
+                    "estimated_cost": self._estimate_cost_from_waypoints(uav_id, waypoints),
                 }
             )
-        return {"mission_id": self._mission_id, "allocations": allocations}
+        return {
+            "mission_id": self._mission_id,
+            "allocations": allocations,
+            "unassigned_task_ids": [int(t["id"]) for t in remaining],
+            "max_distance_budget_m": float(max_distance),
+        }
+
+    @staticmethod
+    def _optimize_route_nearest_neighbor(tasks: List[Dict[str, Any]], sx: float, sy: float) -> List[Dict[str, Any]]:
+        if not tasks:
+            return []
+        remaining = list(tasks)
+        route: List[Dict[str, Any]] = []
+        cx, cy = sx, sy
+        while remaining:
+            best_i = min(
+                range(len(remaining)),
+                key=lambda i: math.hypot(
+                    float(remaining[i]["location"]["x"]) - cx,
+                    float(remaining[i]["location"]["y"]) - cy,
+                ),
+            )
+            nxt = remaining.pop(best_i)
+            route.append(nxt)
+            cx = float(nxt["location"]["x"])
+            cy = float(nxt["location"]["y"])
+        return route
 
     def _publish_coarse_path(self, allocations: Dict[str, Any]) -> None:
         path = Path()
@@ -196,16 +306,14 @@ class TaskAllocator(Node):
         if path.poses:
             self._coarse_path_pub.publish(path)
 
-    def _estimate_cost(self, uav_id: str, tasks: List[Dict[str, Any]]) -> float:
-        if not tasks:
-            return 0.0
+    def _estimate_cost_from_waypoints(self, uav_id: str, waypoints: List[Dict[str, Any]]) -> float:
         state = self._uav_states.get(uav_id)
         x = float(state["x"]) if state else 0.0
         y = float(state["y"]) if state else 0.0
         distance = 0.0
-        for task in tasks:
-            tx = float(task["location"]["x"])
-            ty = float(task["location"]["y"])
+        for pt in waypoints:
+            tx = float(pt["x"])
+            ty = float(pt["y"])
             d = math.hypot(tx - x, ty - y)
             distance += d
             x, y = tx, ty

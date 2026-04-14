@@ -47,7 +47,7 @@ def generate_launch_description() -> LaunchDescription:
                         "uav_count": uav_count,
                         "uav_row_spacing": 3.0,
                         "uav_start_x": -2.0,
-                        "uav_start_z": 1.0,
+                        "uav_start_z": 2.0,
                     }
                 ],
             ),
@@ -95,7 +95,20 @@ def generate_launch_description() -> LaunchDescription:
                 package="orchard_sim",
                 executable="spawn_plan_publisher",
                 name="spawn_plan_publisher",
-                parameters=[{"uav_count": uav_count}],
+                parameters=[
+                    {
+                        "uav_count": uav_count,
+                        "spawn_z": 2.0,
+                        "orchard_width": 69.0,
+                        "orchard_height": 35.0,
+                        "outside_margin": 8.0,
+                        "spawn_area_side": "left",
+                        "spawn_area_width": 8.0,
+                        "spawn_area_height": 10.0,
+                        "spawn_area_center_y": 0.0,
+                        "min_pair_spacing": 2.2,
+                    }
+                ],
             ),
             Node(
                 package="orchard_sim",
@@ -140,8 +153,19 @@ def generate_launch_description() -> LaunchDescription:
                                 "allocation_topic": "/allocation/result_json",
                                 "speed_mps": 1.2,
                                 "cruise_z": 2.0,
+                                "transit_z": 3.85,
+                                "landing_z": 0.25,
+                                "max_flight_time_sec": 1800.0,
                                 "trail_step_m": 0.4,
                                 "trail_max_pts": 500,
+                                # 树冠回避参数（与 world_generator 保持严格一致）
+                                "tree_rows": 8,
+                                "trees_per_row": 24,
+                                "tree_row_spacing": 5.0,
+                                "tree_col_spacing": 3.0,
+                                "tree_radius": 0.35,
+                                "canopy_height_z": 2.9,
+                                "avoid_safety_margin": 0.5,
                             }
                         ],
                         condition=IfCondition(enable_gz_motion),
@@ -152,7 +176,17 @@ def generate_launch_description() -> LaunchDescription:
                 package="orchard_task_allocation",
                 executable="task_allocator",
                 name="task_allocator",
-                parameters=[{"algorithm_mode": pipeline_mode}],
+                parameters=[
+                    {
+                        "algorithm_mode": pipeline_mode,
+                        "uav_speed_mps": 1.2,
+                        "max_flight_time_sec": 1800.0,
+                        "usable_flight_ratio": 0.9,
+                        "zone_bias_weight": 0.35,
+                        "transit_z": 3.85,
+                        "landing_z": 0.25,
+                    }
+                ],
             ),
             Node(package="orchard_task_allocation", executable="dynamic_scheduler", name="dynamic_scheduler"),
             Node(
