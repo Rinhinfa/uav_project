@@ -121,6 +121,12 @@
 2. 若场景事件时间总长超过单次运行时长，会**按比例压缩**到运行窗口的约 10%–80% 区间，保证短时实验仍能触发事件。
 3. 依次以 `baseline`、`proposed` 调用同一 launch，并将指标写入 `baseline_run*.csv` / `proposed_run*.csv`。
 4. 控制台打印各模式覆盖率、路径长度、`event_response_ms` 的均值摘要。
+5. 支持大规模实验常用能力：
+  - `--scenario` 可重复传入（一次跑多个场景）；
+  - `--resume` 断点续跑（已存在 CSV 的 run 自动跳过）；
+  - `--seed-base` 固定随机种子（第 i 次重复使用 `seed_base+i`）；
+  - `--timeout-sec` + `--retry` + `--retry-wait-sec` 单次超时与失败重试；
+  - 每个场景输出 `run_manifest.csv`、`batch_summary.json`，总目录输出 `batch_summary_all.json`。
 
 示例：
 
@@ -132,6 +138,22 @@ ros2 run orchard_evaluation batch_runner \
   --repeats 5 \
   --run-duration-sec 120 \
   --out-dir /tmp/orchard_batch_run
+高负载批量（推荐用于论文主实验）：
+
+```bash
+ros2 run orchard_evaluation batch_runner \
+  --scenario src/orchard_bringup/config/scenario_basic.yaml \
+  --scenario src/orchard_bringup/config/scenario_typical.yaml \
+  --scenario src/orchard_bringup/config/scenario_stress.yaml \
+  --repeats 10 \
+  --run-duration-sec 180 \
+  --seed-base 20260417 \
+  --timeout-sec 360 \
+  --retry 1 \
+  --resume \
+  --out-dir /tmp/paper_batch_all
+```
+
 ```
 
 ### 4.3 报告生成 `report_generator`
@@ -145,6 +167,99 @@ ros2 run orchard_evaluation report_generator \
 ```
 
 输出：`summary.csv`，以及 `coverage_mean.png`、`distance_mean.png`、`event_ms_mean.png`。
+
+### 4.4 论文出图完整流程（推荐直接照做）
+
+本节给出一套可复现、可直接写进论文“实验设置与结果分析”的流程。建议每个场景（`basic/typical/stress`）都独立跑一套，避免混淆。
+
+#### Step 0：准备环境
+
+```bash
+cd /home/liaw/毕业设计
+source /opt/ros/jazzy/setup.bash
+source install/setup.bash
+sudo apt install -y python3-matplotlib
+```
+
+若 `install/setup.bash` 不存在，请先执行一次 `colcon build --symlink-install`。
+
+#### Step 1：运行对比实验，生成原始 CSV
+
+以 `typical` 场景为例，连续重复 5 次：
+
+```bash
+ros2 run orchard_evaluation batch_runner \
+  --scenario src/orchard_bringup/config/scenario_typical.yaml \
+  --repeats 5 \
+  --run-duration-sec 120 \
+  --out-dir /tmp/paper_typical_raw
+```
+
+执行后会生成：
+
+- `baseline_run1.csv ... baseline_run5.csv`
+- `proposed_run1.csv ... proposed_run5.csv`
+- `event_profile.json`（本次实验事件时间轴）
+
+建议你在论文中固定写明这 3 个关键参数：`scenario`、`repeats`、`run-duration-sec`。
+
+#### Step 2：汇总并自动出图
+
+```bash
+ros2 run orchard_evaluation report_generator \
+  --input-dir /tmp/paper_typical_raw \
+  --output-dir /tmp/paper_typical_fig
+```
+
+输出目录 `/tmp/paper_typical_fig` 下将出现：
+
+- `summary.csv`：两种模式的均值与标准差
+- `coverage_mean.png`：覆盖率均值柱状图（越高越好）
+- `distance_mean.png`：路径长度均值柱状图（通常越低越好）
+- `event_ms_mean.png`：事件响应时延均值柱状图（越低越好）
+
+#### Step 3：多场景批量出图
+
+```bash
+# basic
+ros2 run orchard_evaluation batch_runner \
+  --scenario src/orchard_bringup/config/scenario_basic.yaml \
+  --repeats 5 --run-duration-sec 120 --out-dir /tmp/paper_basic_raw
+ros2 run orchard_evaluation report_generator \
+  --input-dir /tmp/paper_basic_raw --output-dir /tmp/paper_basic_fig
+
+# stress
+ros2 run orchard_evaluation batch_runner \
+  --scenario src/orchard_bringup/config/scenario_stress.yaml \
+  --repeats 5 --run-duration-sec 120 --out-dir /tmp/paper_stress_raw
+ros2 run orchard_evaluation report_generator \
+  --input-dir /tmp/paper_stress_raw --output-dir /tmp/paper_stress_fig
+```
+
+最终你会得到 3 组场景图（basic/typical/stress），每组 3 张核心图，可直接构成论文中的“静态场景 + 典型动态 + 压力测试”结果对照。
+
+#### Step 4：如何把图和表写进论文
+
+1. 表格：使用各场景的 `summary.csv`，提取 `coverage_mean/std`、`distance_mean/std`、`event_ms_mean/std`。
+2. 图像：优先放 `coverage_mean.png` 与 `event_ms_mean.png` 作为主图；`distance_mean.png` 放补充图或与覆盖率并排展示。
+3. 文字解释建议：
+   - 覆盖率提升：说明协同规划有效减少漏检区域；
+   - 路径长度变化：说明任务分配与轨迹优化对能耗代理指标的影响；
+   - 事件响应时延下降：说明动态调度在突发事件下更稳定。
+
+#### Step 5：保证“可复现”的建议（答辩常问）
+
+- 同一批图固定 `repeats` 与 `run-duration-sec`，不要跨图改参数。
+- 每个场景单独 `out-dir`，避免旧文件混入新结果。
+- 论文附录中给出你实际使用的命令行（可直接复制本节命令）。
+- 若你改了 `uav_count` 或场景事件，重新全量跑三组场景，不建议只补跑单张图。
+
+#### 常见问题（出图失败时优先排查）
+
+- 没有 PNG：通常是未安装 `matplotlib`，先执行 `sudo apt install -y python3-matplotlib`。
+- `summary.csv` 为空或数值异常：检查输入目录是否同时包含 `baseline_run*.csv` 与 `proposed_run*.csv`。
+- 柱状图看起来“差不多”：优先增加 `repeats`（如 10 次）而不是只延长单次时长。
+- 批跑结束出现 `KeyboardInterrupt`：若 launch 返回码为 0 且 CSV 正常写入，属于预期现象。
 
 ---
 
