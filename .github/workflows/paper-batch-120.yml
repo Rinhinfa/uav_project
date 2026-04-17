@@ -54,14 +54,15 @@ jobs:
           sudo apt-get install -y \
             python3-rosdep \
             python3-colcon-common-extensions \
-            python3-matplotlib
+            python3-matplotlib \
+            python3-yaml
 
       - name: Install ROS deps via rosdep
         run: |
           set -euo pipefail
           sudo rosdep init || true
           rosdep update
-          rosdep install --from-paths src --ignore-src -r -y
+          rosdep install --from-paths src --ignore-src -r -y --rosdistro jazzy
 
       - name: Build workspace
         run: |
