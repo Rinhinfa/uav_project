@@ -4,6 +4,62 @@
 
 ---
 
+## 0. 开源用户先看（环境与快速开始）
+
+如果你是第一次接触本仓库，建议先完成本节，再继续阅读后续架构与实验章节。
+
+### 0.1 运行环境（推荐）
+
+- 操作系统：`Ubuntu 24.04`（x86_64）
+- ROS：`ROS 2 Jazzy`
+- 构建系统：`colcon`
+- Python：系统 `python3`（建议 3.12）
+
+### 0.2 依赖安装（最小可用）
+
+```bash
+sudo apt-get update
+sudo apt-get install -y \
+  python3-rosdep \
+  python3-colcon-common-extensions \
+  python3-yaml \
+  python3-matplotlib \
+  ros-jazzy-ros-gz \
+  ros-jazzy-ros-gz-bridge
+
+sudo rosdep init || true
+rosdep update
+```
+
+说明：
+
+- `python3-yaml` 为 `batch_runner` 必需依赖。
+- `python3-matplotlib` 仅用于 `report_generator` 输出 PNG。
+- `ros-jazzy-ros-gz*` 仅在使用 `sim_with_gz.launch.py` 时需要。
+
+### 0.3 克隆后快速构建
+
+```bash
+cd /path/to/uav_project
+source /opt/ros/jazzy/setup.bash
+rosdep install --from-paths src --ignore-src -r -y --rosdistro jazzy
+colcon build --symlink-install
+source install/setup.bash
+```
+
+### 0.4 快速烟雾测试（无 Gazebo）
+
+```bash
+ros2 launch orchard_bringup sim_bringup.launch.py \
+  pipeline_mode:=proposed \
+  run_duration_sec:=30 \
+  metrics_csv:=/tmp/orchard_smoke.csv
+```
+
+若命令正常退出且生成 `/tmp/orchard_smoke.csv`，说明基础运行环境已可用。
+
+---
+
 ## 1. 工作区结构
 
 标准 colcon 布局：
@@ -138,7 +194,9 @@ ros2 run orchard_evaluation batch_runner \
   --repeats 5 \
   --run-duration-sec 120 \
   --out-dir /tmp/orchard_batch_run
-高负载批量（推荐用于论文主实验）：
+```
+
+高负载批量：
 
 ```bash
 ros2 run orchard_evaluation batch_runner \
@@ -152,8 +210,6 @@ ros2 run orchard_evaluation batch_runner \
   --retry 1 \
   --resume \
   --out-dir /tmp/paper_batch_all
-```
-
 ```
 
 ### 4.3 报告生成 `report_generator`
@@ -175,10 +231,10 @@ ros2 run orchard_evaluation report_generator \
 #### Step 0：准备环境
 
 ```bash
-cd /home/liaw/毕业设计
+cd /path/to/uav_project
 source /opt/ros/jazzy/setup.bash
 source install/setup.bash
-sudo apt install -y python3-matplotlib
+sudo apt install -y python3-matplotlib python3-yaml
 ```
 
 若 `install/setup.bash` 不存在，请先执行一次 `colcon build --symlink-install`。
@@ -201,7 +257,7 @@ ros2 run orchard_evaluation batch_runner \
 - `proposed_run1.csv ... proposed_run5.csv`
 - `event_profile.json`（本次实验事件时间轴）
 
-建议你在论文中固定写明这 3 个关键参数：`scenario`、`repeats`、`run-duration-sec`。
+建议在论文中固定写明 3 个关键参数：`scenario`、`repeats`、`run-duration-sec`。
 
 #### Step 2：汇总并自动出图
 
@@ -236,27 +292,27 @@ ros2 run orchard_evaluation report_generator \
   --input-dir /tmp/paper_stress_raw --output-dir /tmp/paper_stress_fig
 ```
 
-最终你会得到 3 组场景图（basic/typical/stress），每组 3 张核心图，可直接构成论文中的“静态场景 + 典型动态 + 压力测试”结果对照。
+最终会得到 3 组场景图（basic/typical/stress），每组 3 张核心图，可直接构成论文中的“静态场景 + 典型动态 + 压力测试”结果对照。
 
-#### Step 4：如何把图和表写进论文
-
+#### Step 4：如何使用图和表
 1. 表格：使用各场景的 `summary.csv`，提取 `coverage_mean/std`、`distance_mean/std`、`event_ms_mean/std`。
-2. 图像：优先放 `coverage_mean.png` 与 `event_ms_mean.png` 作为主图；`distance_mean.png` 放补充图或与覆盖率并排展示。
-3. 文字解释建议：
+2. 图像： `coverage_mean.png` 与 `event_ms_mean.png` 作为主图；`distance_mean.png` 补充图或与覆盖率并排展示。
+3. 文字解释：
    - 覆盖率提升：说明协同规划有效减少漏检区域；
    - 路径长度变化：说明任务分配与轨迹优化对能耗代理指标的影响；
    - 事件响应时延下降：说明动态调度在突发事件下更稳定。
 
-#### Step 5：保证“可复现”的建议（答辩常问）
+#### Step 5：“可复现”的建议
 
 - 同一批图固定 `repeats` 与 `run-duration-sec`，不要跨图改参数。
 - 每个场景单独 `out-dir`，避免旧文件混入新结果。
-- 论文附录中给出你实际使用的命令行（可直接复制本节命令）。
-- 若你改了 `uav_count` 或场景事件，重新全量跑三组场景，不建议只补跑单张图。
+- 建议在附录给出实际使用的命令行。
+- 若改了 `uav_count` 或场景事件，重新全量跑三组场景，不建议只补跑单张图。
 
 #### 常见问题（出图失败时优先排查）
 
 - 没有 PNG：通常是未安装 `matplotlib`，先执行 `sudo apt install -y python3-matplotlib`。
+- `ModuleNotFoundError: No module named 'yaml'`：安装 `python3-yaml`。
 - `summary.csv` 为空或数值异常：检查输入目录是否同时包含 `baseline_run*.csv` 与 `proposed_run*.csv`。
 - 柱状图看起来“差不多”：优先增加 `repeats`（如 10 次）而不是只延长单次时长。
 - 批跑结束出现 `KeyboardInterrupt`：若 launch 返回码为 0 且 CSV 正常写入，属于预期现象。
@@ -268,14 +324,17 @@ ros2 run orchard_evaluation report_generator \
 ### 5.1 依赖
 
 - ROS 2 **Jazzy**（Ubuntu 24.04）
-- `colcon`、`python3-yaml`（批跑）
+- `python3-rosdep`、`python3-colcon-common-extensions`
+- `python3-yaml`（批跑必需）
 - 可选：`python3-matplotlib`（报告出图）
+- 可选：`ros-jazzy-ros-gz`、`ros-jazzy-ros-gz-bridge`（Gazebo 联动）
 
 ### 5.2 编译
 
 ```bash
-cd /home/liaw/毕业设计   # 或你的工作区根目录
+cd /path/to/uav_project
 source /opt/ros/jazzy/setup.bash
+rosdep install --from-paths src --ignore-src -r -y --rosdistro jazzy
 colcon build --symlink-install
 source install/setup.bash
 ```
@@ -295,7 +354,7 @@ ros2 launch orchard_bringup sim_with_gz.launch.py \
 
 `event_profile_file` 为空字符串时不回放事件。默认分配器为事件驱动，不会每个周期重复重置任务。
 
-### 5.4 定时结束（论文批跑）
+### 5.4 定时结束（批跑）
 
 ```bash
 ros2 launch orchard_bringup sim_with_gz.launch.py \
@@ -324,13 +383,13 @@ ros2 launch orchard_bringup sim_with_gz.launch.py \
 | `planner_mode` | 仲裁器当前模式 |
 | `event_response_ms` | 最近一次事件重分配响应时延（来自 `/scheduler/events_log`） |
 
-可与开题报告中的「完成时间、能耗/路径、覆盖率、动态响应、轨迹平滑」逐项对应；**轨迹平滑度**可在后续对 `/uav_1/cmd_path` 或 odom 差分增加 jerk 指标列扩展。
+可与中的「完成时间、能耗/路径、覆盖率、动态响应、轨迹平滑」逐项对应；**轨迹平滑度**可在后续对 `/uav_1/cmd_path` 或 odom 差分增加 jerk 指标列扩展。
 
 ---
 
-## 7. 与开题报告模块的对应关系
+## 7. 与模块的对应关系
 
-| 开题模块 | 本工作区实现 |
+|   目标   | 本工作区实现 |
 |----------|----------------|
 | 任务分配器 + 行垄启发 | `task_allocator`，`algorithm_mode=proposed` |
 | 分离式基线 | `algorithm_mode=baseline` + 直通轨迹 + 关局部规划 |
