@@ -8,3 +8,5 @@
 !/src/
 !/src/**
 !/README.md
+!/.github/
+!/.github/**

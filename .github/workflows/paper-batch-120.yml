@@ -1,0 +1,190 @@
+name: paper-batch-120
+
+on:
+  workflow_dispatch:
+    inputs:
+      repeats:
+        description: "每场景重复次数（默认 20 => 总计 120 次）"
+        required: true
+        default: "20"
+      run_duration_sec:
+        description: "单次仿真时长（秒）"
+        required: true
+        default: "180"
+      seed_base:
+        description: "随机种子基数（可复现）"
+        required: true
+        default: "20260417"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: paper-batch-120-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  run-batch:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        scenario:
+          - { name: basic, file: scenario_basic.yaml }
+          - { name: typical, file: scenario_typical.yaml }
+          - { name: stress, file: scenario_stress.yaml }
+        mode:
+          - baseline
+          - proposed
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup ROS 2 Jazzy
+        uses: ros-tooling/setup-ros@v0.7
+        with:
+          required-ros-distributions: jazzy
+
+      - name: Install system deps
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            python3-rosdep \
+            python3-colcon-common-extensions \
+            python3-matplotlib
+
+      - name: Install ROS deps via rosdep
+        run: |
+          set -euo pipefail
+          sudo rosdep init || true
+          rosdep update
+          rosdep install --from-paths src --ignore-src -r -y
+
+      - name: Build workspace
+        run: |
+          set -euo pipefail
+          source /opt/ros/jazzy/setup.bash
+          colcon build --symlink-install
+
+      - name: Run batch simulation
+        env:
+          REPEATS: ${{ inputs.repeats || '20' }}
+          RUN_DURATION: ${{ inputs.run_duration_sec || '180' }}
+          SEED_BASE: ${{ inputs.seed_base || '20260417' }}
+          SCENARIO_FILE: ${{ matrix.scenario.file }}
+          SCENARIO_NAME: ${{ matrix.scenario.name }}
+          MODE: ${{ matrix.mode }}
+        run: |
+          set -euo pipefail
+          source /opt/ros/jazzy/setup.bash
+          source install/setup.bash
+
+          RAW_DIR="/tmp/paper_raw/${SCENARIO_NAME}/${MODE}"
+          FIG_DIR="/tmp/paper_fig/${SCENARIO_NAME}/${MODE}"
+          mkdir -p "${RAW_DIR}" "${FIG_DIR}"
+
+          timeout_sec=$(( RUN_DURATION * 3 ))
+          if [ "${timeout_sec}" -lt 300 ]; then timeout_sec=300; fi
+
+          ros2 run orchard_evaluation batch_runner \
+            --scenario "src/orchard_bringup/config/${SCENARIO_FILE}" \
+            --modes "${MODE}" \
+            --repeats "${REPEATS}" \
+            --run-duration-sec "${RUN_DURATION}" \
+            --seed-base "${SEED_BASE}" \
+            --timeout-sec "${timeout_sec}" \
+            --retry 1 \
+            --retry-wait-sec 3 \
+            --out-dir "${RAW_DIR}"
+
+          ros2 run orchard_evaluation report_generator \
+            --input-dir "${RAW_DIR}" \
+            --output-dir "${FIG_DIR}"
+
+      - name: Upload scenario-mode artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: paper-${{ matrix.scenario.name }}-${{ matrix.mode }}
+          path: |
+            /tmp/paper_raw/${{ matrix.scenario.name }}/${{ matrix.mode }}
+            /tmp/paper_fig/${{ matrix.scenario.name }}/${{ matrix.mode }}
+          retention-days: 30
+
+  merge-summary:
+    runs-on: ubuntu-24.04
+    needs: run-batch
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: /tmp/all_artifacts
+
+      - name: Build merged paper summary table
+        run: |
+          set -euo pipefail
+          python3 - << 'PY'
+          import csv
+          import glob
+          import os
+          import statistics
+
+          grouped = {}
+          for p in glob.glob('/tmp/all_artifacts/**/run_manifest.csv', recursive=True):
+            with open(p, 'r', encoding='utf-8') as f:
+              for r in csv.DictReader(f):
+                scenario = r.get('scenario', '')
+                mode = r.get('mode', '')
+                key = (scenario, mode)
+                grouped.setdefault(key, {'coverage': [], 'distance': [], 'event_ms': []})
+                try:
+                  grouped[key]['coverage'].append(float(r.get('coverage_ratio', '0') or 0.0))
+                  grouped[key]['distance'].append(float(r.get('distance_total', '0') or 0.0))
+                  grouped[key]['event_ms'].append(float(r.get('event_response_ms', '0') or 0.0))
+                except ValueError:
+                  pass
+
+          rows = []
+          for (scenario, mode), v in grouped.items():
+            cov = v['coverage']
+            dist = v['distance']
+            evt = v['event_ms']
+            rows.append({
+              'scenario': scenario,
+              'mode': mode,
+              'runs': len(cov),
+              'coverage_mean': statistics.mean(cov) if cov else 0.0,
+              'coverage_std': statistics.pstdev(cov) if len(cov) > 1 else 0.0,
+              'distance_mean': statistics.mean(dist) if dist else 0.0,
+              'distance_std': statistics.pstdev(dist) if len(dist) > 1 else 0.0,
+              'event_ms_mean': statistics.mean(evt) if evt else 0.0,
+              'event_ms_std': statistics.pstdev(evt) if len(evt) > 1 else 0.0,
+            })
+
+          out = '/tmp/all_artifacts/paper_summary_all.csv'
+          os.makedirs(os.path.dirname(out), exist_ok=True)
+          with open(out, 'w', newline='', encoding='utf-8') as f:
+              writer = csv.DictWriter(
+                  f,
+                  fieldnames=[
+                      'scenario', 'mode', 'runs',
+                      'coverage_mean', 'coverage_std',
+                      'distance_mean', 'distance_std',
+                      'event_ms_mean', 'event_ms_std'
+                  ],
+              )
+              writer.writeheader()
+              for r in sorted(rows, key=lambda x: (x['scenario'], x['mode'])):
+                  writer.writerow(r)
+
+          print(f'wrote {out} with {len(rows)} rows')
+          PY
+
+      - name: Upload merged summary
+        uses: actions/upload-artifact@v4
+        with:
+          name: paper-summary-all
+          path: /tmp/all_artifacts/paper_summary_all.csv
+          retention-days: 60
