@@ -54,10 +54,10 @@ jobs:
           sudo apt-get install -y \
             python3-rosdep \
             python3-colcon-common-extensions \
-            python3-ament-package \
             python3-matplotlib \
             python3-setuptools \
             python3-yaml \
+            ros-jazzy-ament-package \
             ros-jazzy-ament-cmake \
             ros-jazzy-ament-cmake-python
 
