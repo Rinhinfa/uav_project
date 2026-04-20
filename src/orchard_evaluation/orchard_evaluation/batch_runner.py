@@ -6,6 +6,7 @@ import copy
 import re
 import statistics
 import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import Any, Dict, List
@@ -203,6 +204,7 @@ def write_run_manifest(out_csv: Path, rows: List[Dict[str, Any]]) -> None:
                 "random_seed",
                 "return_code",
                 "skipped",
+                "metrics_written",
                 "csv_path",
                 "log_path",
                 "coverage_ratio",
@@ -293,6 +295,7 @@ def main() -> None:
 
                 rcodes.append(rcode)
                 finals.append(final_row)
+                metrics_written = bool(final_row)
                 run_manifest_rows.append(
                     {
                         "scenario": scenario_name,
@@ -301,6 +304,7 @@ def main() -> None:
                         "random_seed": repeat_seed,
                         "return_code": rcode,
                         "skipped": int(skipped),
+                        "metrics_written": int(metrics_written),
                         "csv_path": str(csv_path),
                         "log_path": str(log_path),
                         "coverage_ratio": to_float(final_row, "coverage_ratio"),
@@ -337,6 +341,17 @@ def main() -> None:
 
     with (out_dir / "batch_summary_all.json").open("w", encoding="utf-8") as f:
         json.dump(all_summaries, f, ensure_ascii=False, indent=2)
+
+    failed_runs = 0
+    missing_metrics = 0
+    for scenario_data in all_summaries.values():
+        for mode_data in scenario_data["summary"].values():
+            failed_runs += sum(1 for c in mode_data["return_codes"] if c != 0)
+            missing_metrics += sum(1 for row in mode_data["final_rows"] if not row)
+
+    if failed_runs or missing_metrics:
+        print(f"batch finished with failed_runs={failed_runs}, missing_metrics={missing_metrics}", file=sys.stderr)
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":
