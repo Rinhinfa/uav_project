@@ -176,13 +176,22 @@ def to_float(row: Dict[str, Any], key: str) -> float:
         return 0.0
 
 
+def task_completion_value(row: Dict[str, Any]) -> float:
+    if "task_completion_ratio" in row:
+        return to_float(row, "task_completion_ratio")
+    return to_float(row, "coverage_ratio")
+
+
 def summarize_final_rows(rows: List[Dict[str, Any]]) -> Dict[str, float]:
     valid = [r for r in rows if r]
+    completions = [task_completion_value(r) for r in valid]
     coverages = [to_float(r, "coverage_ratio") for r in valid]
     distances = [to_float(r, "distance_total") if "distance_total" in r else to_float(r, "distance_uav1") for r in valid]
     responses = [to_float(r, "event_response_ms") for r in valid]
     return {
         "valid_runs": float(len(valid)),
+        "task_completion_mean": statistics.mean(completions) if completions else 0.0,
+        "task_completion_std": statistics.pstdev(completions) if len(completions) > 1 else 0.0,
         "coverage_mean": statistics.mean(coverages) if coverages else 0.0,
         "coverage_std": statistics.pstdev(coverages) if len(coverages) > 1 else 0.0,
         "distance_mean": statistics.mean(distances) if distances else 0.0,
@@ -207,6 +216,7 @@ def write_run_manifest(out_csv: Path, rows: List[Dict[str, Any]]) -> None:
                 "metrics_written",
                 "csv_path",
                 "log_path",
+                "task_completion_ratio",
                 "coverage_ratio",
                 "distance_total",
                 "event_response_ms",
@@ -307,6 +317,7 @@ def main() -> None:
                         "metrics_written": int(metrics_written),
                         "csv_path": str(csv_path),
                         "log_path": str(log_path),
+                        "task_completion_ratio": task_completion_value(final_row),
                         "coverage_ratio": to_float(final_row, "coverage_ratio"),
                         "distance_total": to_float(final_row, "distance_total")
                         if "distance_total" in final_row
@@ -330,6 +341,7 @@ def main() -> None:
             ok_cnt = sum(1 for c in data["return_codes"] if c == 0)
             print(
                 f"[{mode}] ok={ok_cnt}/{len(data['return_codes'])} "
+                f"mean_task_completion={stats['task_completion_mean']:.3f}±{stats['task_completion_std']:.3f} "
                 f"mean_coverage={stats['coverage_mean']:.3f}±{stats['coverage_std']:.3f} "
                 f"mean_distance={stats['distance_mean']:.3f}±{stats['distance_std']:.3f} "
                 f"mean_event_ms={stats['event_ms_mean']:.2f}±{stats['event_ms_std']:.2f}"

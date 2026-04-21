@@ -10,6 +10,8 @@ from typing import Any, Dict, List, Sequence, Tuple
 
 SUMMARY_FIELDS = [
     "runs",
+    "task_completion_mean",
+    "task_completion_std",
     "coverage_mean",
     "coverage_std",
     "distance_mean",
@@ -19,9 +21,10 @@ SUMMARY_FIELDS = [
 ]
 
 PLOT_METRICS = [
-    ("coverage_mean", "Coverage Ratio"),
+    ("task_completion_mean", "Task Completion Ratio"),
     ("distance_mean", "Path Length (m)"),
     ("event_ms_mean", "Event Response (ms)"),
+    ("coverage_mean", "Coverage Ratio"),
 ]
 
 
@@ -72,10 +75,18 @@ def distance_value(row: Dict[str, Any]) -> float:
     return to_float(row, "distance_uav1")
 
 
+def task_completion_value(row: Dict[str, Any]) -> float:
+    if "task_completion_ratio" in row:
+        return to_float(row, "task_completion_ratio")
+    return to_float(row, "coverage_ratio")
+
+
 def summarize(rows: List[Dict[str, Any]]) -> Dict[str, float]:
     if not rows:
         return {
             "runs": 0.0,
+            "task_completion_mean": 0.0,
+            "task_completion_std": 0.0,
             "coverage_mean": 0.0,
             "coverage_std": 0.0,
             "distance_mean": 0.0,
@@ -83,12 +94,15 @@ def summarize(rows: List[Dict[str, Any]]) -> Dict[str, float]:
             "event_ms_mean": 0.0,
             "event_ms_std": 0.0,
         }
+    completion = [task_completion_value(r) for r in rows]
     cov = [to_float(r, "coverage_ratio") for r in rows]
     dist = [distance_value(r) for r in rows]
     evt = [to_float(r, "event_response_ms") for r in rows]
     std = lambda xs: statistics.pstdev(xs) if len(xs) > 1 else 0.0
     return {
         "runs": float(len(rows)),
+        "task_completion_mean": statistics.mean(completion),
+        "task_completion_std": std(completion),
         "coverage_mean": statistics.mean(cov),
         "coverage_std": std(cov),
         "distance_mean": statistics.mean(dist),
@@ -191,7 +205,7 @@ def maybe_plot(
         ax.set_title(label)
         ax.set_ylabel(label)
         ax.grid(axis="y", alpha=0.25)
-        if key == "coverage_mean":
+        if key in {"task_completion_mean", "coverage_mean"}:
             ax.set_ylim(0.0, max(1.0, ax.get_ylim()[1]))
         fig.tight_layout()
         png = out_dir / f"{key}.png"

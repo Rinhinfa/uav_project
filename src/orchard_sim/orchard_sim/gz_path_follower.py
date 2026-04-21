@@ -91,6 +91,7 @@ class GzPathFollower(Node):
         self._trail: Dict[str, List[List[float]]] = {}
         self._last_mission_id = -1
         self._last_tick_time = self.get_clock().now()
+        self._warned_missing_pose_service = False
         self._init_spawn_states()
 
         self.create_subscription(String, allocation_topic, self._on_allocation, _TRANSIENT_QOS)
@@ -166,8 +167,15 @@ class GzPathFollower(Node):
             self._uav_spawn_xy[uid] = (st["x"], st["y"])
 
     def _on_timer(self) -> None:
-        if not self._client.wait_for_service(timeout_sec=0.0):
-            return
+        service_ready = self._client.wait_for_service(timeout_sec=0.0)
+        if not service_ready and not self._warned_missing_pose_service:
+            self.get_logger().info(
+                "SetEntityPose service unavailable; continuing in headless mode and publishing simulated UAV positions only."
+            )
+            self._warned_missing_pose_service = True
+        elif service_ready and self._warned_missing_pose_service:
+            self.get_logger().info("SetEntityPose service available again; resuming Gazebo pose updates.")
+            self._warned_missing_pose_service = False
         now = self.get_clock().now()
         dt = max(1e-3, (now - self._last_tick_time).nanoseconds / 1e9)
         self._last_tick_time = now
@@ -180,7 +188,8 @@ class GzPathFollower(Node):
                 self._timeout_landed[uid] = True
             self._advance_one(uid, max_step)
             self._record_trail(uid)
-            self._send_pose(uid)
+            if service_ready:
+                self._send_pose(uid)
         self._publish_trail()
         self._publish_positions()
 

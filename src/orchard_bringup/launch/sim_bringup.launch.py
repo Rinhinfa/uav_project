@@ -103,6 +103,23 @@ def generate_launch_description() -> LaunchDescription:
                     }
                 ],
             ),
+            Node(
+                package="orchard_sim",
+                executable="gz_path_follower",
+                name="headless_path_follower",
+                parameters=[
+                    {
+                        "uav_count": uav_count,
+                        "speed_mps": uav_speed_mps,
+                        "max_flight_time_sec": max_flight_time_sec,
+                        "tree_rows": rows,
+                        "trees_per_row": trees_per_row,
+                        "tree_row_spacing": row_spacing,
+                        "tree_col_spacing": tree_spacing,
+                        "tree_radius": tree_radius,
+                    }
+                ],
+            ),
             TimerAction(
                 period=1.0,
                 actions=[
@@ -158,6 +175,10 @@ def generate_launch_description() -> LaunchDescription:
                         "output_csv": metrics_csv,
                         "pipeline_mode": pipeline_mode,
                         "uav_count": uav_count,
+                        "task_rows": rows,
+                        "tasks_per_row": trees_per_row,
+                        "task_row_spacing": row_spacing,
+                        "task_col_spacing": tree_spacing,
                         "orchard_width": orchard_width,
                         "orchard_height": orchard_height,
                         "grid_size": grid_size,

@@ -217,7 +217,17 @@ def generate_launch_description() -> LaunchDescription:
                 package="orchard_evaluation",
                 executable="metrics_aggregator",
                 name="metrics_aggregator",
-                parameters=[{"output_csv": metrics_csv, "pipeline_mode": pipeline_mode, "uav_count": uav_count}],
+                parameters=[
+                    {
+                        "output_csv": metrics_csv,
+                        "pipeline_mode": pipeline_mode,
+                        "uav_count": uav_count,
+                        "task_rows": 8,
+                        "tasks_per_row": 24,
+                        "task_row_spacing": 5.0,
+                        "task_col_spacing": 3.0,
+                    }
+                ],
             ),
             TimerAction(
                 period=run_duration_sec,

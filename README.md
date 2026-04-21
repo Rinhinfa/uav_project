@@ -222,7 +222,7 @@ ros2 run orchard_evaluation report_generator \
   --output-dir /tmp/orchard_report
 ```
 
-输出：`summary.csv`，以及 `coverage_mean.png`、`distance_mean.png`、`event_ms_mean.png`。
+输出：`summary.csv`，以及 `task_completion_mean.png`、`distance_mean.png`、`event_ms_mean.png`。同时保留辅助图 `coverage_mean.png`。
 
 ### 4.4 论文出图完整流程（推荐直接照做）
 
@@ -270,7 +270,8 @@ ros2 run orchard_evaluation report_generator \
 输出目录 `/tmp/paper_typical_fig` 下将出现：
 
 - `summary.csv`：两种模式的均值与标准差
-- `coverage_mean.png`：覆盖率均值柱状图（越高越好）
+- `task_completion_mean.png`：任务完成率均值柱状图（越高越好，推荐作为主图）
+- `coverage_mean.png`：中心轨迹栅格覆盖率均值柱状图（辅助指标）
 - `distance_mean.png`：路径长度均值柱状图（通常越低越好）
 - `event_ms_mean.png`：事件响应时延均值柱状图（越低越好）
 
@@ -292,13 +293,13 @@ ros2 run orchard_evaluation report_generator \
   --input-dir /tmp/paper_stress_raw --output-dir /tmp/paper_stress_fig
 ```
 
-最终会得到 3 组场景图（basic/typical/stress），每组 3 张核心图，可直接构成论文中的“静态场景 + 典型动态 + 压力测试”结果对照。
+最终会得到 3 组场景图（basic/typical/stress），每组至少 3 张核心图，可直接构成论文中的“静态场景 + 典型动态 + 压力测试”结果对照。
 
 #### Step 4：如何使用图和表
-1. 表格：使用各场景的 `summary.csv`，提取 `coverage_mean/std`、`distance_mean/std`、`event_ms_mean/std`。
-2. 图像： `coverage_mean.png` 与 `event_ms_mean.png` 作为主图；`distance_mean.png` 补充图或与覆盖率并排展示。
+1. 表格：使用各场景的 `summary.csv`，优先提取 `task_completion_mean/std`、`distance_mean/std`、`event_ms_mean/std`；`coverage_mean/std` 作为辅助指标。
+2. 图像： `task_completion_mean.png` 与 `event_ms_mean.png` 作为主图；`distance_mean.png` 补充图；`coverage_mean.png` 仅用于解释中心轨迹覆盖范围。
 3. 文字解释：
-   - 覆盖率提升：说明协同规划有效减少漏检区域；
+   - 任务完成率提升：说明协同规划有效减少漏检任务、提高有效巡检进度；
    - 路径长度变化：说明任务分配与轨迹优化对能耗代理指标的影响；
    - 事件响应时延下降：说明动态调度在突发事件下更稳定。
 
@@ -379,6 +380,7 @@ ros2 launch orchard_bringup sim_with_gz.launch.py \
 | `distance_uav1` | uav_1 累计路径长度估计 |
 | `distance_total` | 全部无人机累计路径长度估计 |
 | `active_uavs` | 当前有里程计数据的无人机数量 |
+| `task_completion_ratio` | 已完成扫描点数 / 当前已知总扫描点数（推荐主指标） |
 | `coverage_ratio` | 基于栅格离散的近似覆盖率 |
 | `planner_mode` | 仲裁器当前模式 |
 | `event_response_ms` | 最近一次事件重分配响应时延（来自 `/scheduler/events_log`） |
