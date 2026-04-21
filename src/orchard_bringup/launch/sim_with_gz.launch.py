@@ -148,6 +148,7 @@ def generate_launch_description() -> LaunchDescription:
                             {
                                 "world_name": "orchard_world",
                                 "uav_count": uav_count,
+                                "planner_mode": pipeline_mode,
                                 "uav_row_spacing": 3.0,
                                 "uav_start_x": -2.0,
                                 "allocation_topic": "/allocation/result_json",
@@ -199,13 +200,13 @@ def generate_launch_description() -> LaunchDescription:
                 package="orchard_traj_minco",
                 executable="traj_optimizer_node",
                 name="traj_optimizer_node",
-                parameters=[{"planner_mode": pipeline_mode}],
+                parameters=[{"planner_mode": pipeline_mode, "uav_count": uav_count}],
             ),
             Node(
                 package="orchard_ego_bridge",
                 executable="ego_local_planner_stub_node",
                 name="ego_local_planner_stub",
-                parameters=[{"planner_mode": pipeline_mode}],
+                parameters=[{"planner_mode": pipeline_mode, "uav_count": uav_count}],
             ),
             Node(
                 package="orchard_ego_bridge",

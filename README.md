@@ -92,14 +92,14 @@ ros2 launch orchard_bringup sim_bringup.launch.py \
 1. **world_generator**：按行距、株距生成行垄果树模型，写出 SDF（默认 `/tmp/orchard_world.sdf`），可直接被 `gz sim` 加载。
 2. **fleet_state_publisher**：发布多机 JSON 状态、各机 `nav_msgs/Odometry`、固定示例障碍物 `geometry_msgs/PoseArray`。
 3. **spawn_plan_publisher**：发布多机初始 spawn 位姿（`/sim/spawn_poses`），便于后续接入 spawn 服务。
-4. **task_allocator**：根据机群状态做任务分配，输出粗航点 `nav_msgs/Path` 与分配结果 JSON、`mission_id`；默认采用**事件驱动重分配**减少路径反复重置。
+4. **task_allocator**：根据机群状态做任务分配，向 `/uav_i/planner/coarse_waypoints` 输出各机粗航点，同时保留 merged 调试镜像 `/planner/coarse_waypoints`；并发布分配结果 JSON、`mission_id`。
 5. **dynamic_scheduler**：监听 `/scheduler/event_in`，异步调用重分配服务，在 `/scheduler/events_log` 输出 **含 `response_latency_ms` 的 JSON**。
 6. **event_profile_player**：若 `event_profile_file` 非空，按 JSON 内时间戳向 `/scheduler/event_in` 注入事件（与 `scenario_*.yaml` 联动）。
-7. **traj_optimizer_node**：`proposed` 下对粗航点做关键帧子采样 + 线段密化；`baseline` 下直通粗航点。
-8. **ego_local_planner_stub_node**：`proposed` 下对近障路径点做横向偏移并发布局部路径；`baseline` 下不发布局部路径。
-9. **planning_arbitrator_node**：短时跟踪局部路径，否则跟踪全局路径；按 `uav_count` 发布最终 `nav_msgs/Path` 至 `/uav_i/cmd_path`，并发布模式字符串。
+7. **traj_optimizer_node**：按 UAV 订阅 `/uav_i/planner/coarse_waypoints`；`proposed` 下做关键帧子采样 + 线段密化，输出 `/uav_i/planner/global_path`；`baseline` 下直通粗航点。另保留 merged 调试镜像 `/planner/global_path`。
+8. **ego_local_planner_stub_node**：`proposed` 下按 UAV 对近障路径点做横向偏移并发布 `/uav_i/planner/local_path`；`baseline` 下不发布局部路径。另保留 merged 调试镜像 `/planner/local_path`。
+9. **planning_arbitrator_node**：逐机在 `/uav_i/planner/global_path` 与 `/uav_i/planner/local_path` 间仲裁，发布最终 `nav_msgs/Path` 至 `/uav_i/cmd_path`，并发布模式字符串。
 10. **parameter_bridge（ros_gz_bridge）**：桥接 `/world/orchard_world/set_pose` 服务。
-11. **gz_path_follower**：订阅分配结果 JSON，按 `mission_id` 变化更新各机路径，并通过 set_pose 服务驱动 Gazebo 中 `uav_1..uav_n` 运动。
+11. **gz_path_follower**：订阅 `/uav_i/cmd_path` 作为实际执行链路输入，按 `mission_id` 处理新任务版本，并通过 set_pose 服务驱动 Gazebo 中 `uav_1..uav_n` 运动。
 12. **metrics_aggregator**：周期性将覆盖率、里程、`mission_id`、规划模式、事件响应时延等写入 CSV（含多机总里程与活跃机数量）。
 13. **TimerAction**：`run_duration_sec` 到达后整体 Shutdown，便于批跑自动结束。
 
@@ -128,10 +128,13 @@ ros2 launch orchard_bringup sim_bringup.launch.py \
 | `/sim/spawn_poses` | `geometry_msgs/PoseArray` | 多机 spawn 建议位姿。 |
 | `/allocation/result_json` | `std_msgs/String` | 分配结果 JSON。 |
 | `/allocation/mission_id` | `std_msgs/UInt64` | 单调递增任务版本号。 |
-| `/planner/coarse_waypoints` | `nav_msgs/Path` | 粗航点（任务点序列）。 |
-| `/planner/global_path` | `nav_msgs/Path` | 轨迹优化后全局参考。 |
-| `/planner/local_path` | `nav_msgs/Path` | 局部避障输出。 |
+| `/uav_i/planner/coarse_waypoints` | `nav_msgs/Path` | 各机粗航点（任务点序列，实际规划入口）。 |
+| `/uav_i/planner/global_path` | `nav_msgs/Path` | 各机轨迹优化后全局参考。 |
+| `/uav_i/planner/local_path` | `nav_msgs/Path` | 各机局部避障输出。 |
 | `/uav_i/cmd_path` | `nav_msgs/Path` | 仲裁后下发轨迹（按 `uav_count` 多机发布）。 |
+| `/planner/coarse_waypoints` | `nav_msgs/Path` | merged 粗航点调试镜像（兼容旧可视化）。 |
+| `/planner/global_path` | `nav_msgs/Path` | merged 全局路径调试镜像（兼容旧 RViz / 调试）。 |
+| `/planner/local_path` | `nav_msgs/Path` | merged 局部路径调试镜像（兼容旧 RViz / 调试）。 |
 | `/planner/mode` | `std_msgs/String` | `GLOBAL_TRACK` / `LOCAL_AVOID`。 |
 | `/scheduler/event_in` | `std_msgs/String` | 动态事件 JSON。 |
 | `/scheduler/events_log` | `std_msgs/String` | 事件处理结果与 **响应时延（ms）**。 |
@@ -309,6 +312,16 @@ ros2 run orchard_evaluation report_generator \
 - 每个场景单独 `out-dir`，避免旧文件混入新结果。
 - 建议在附录给出实际使用的命令行。
 - 若改了 `uav_count` 或场景事件，重新全量跑三组场景，不建议只补跑单张图。
+
+### 4.6 GitHub Actions 产物位置
+
+仓库内置工作流：`.github/workflows/paper-batch-120.yml`。在 GitHub Actions 跑完后，建议优先下载以下 artifact：
+
+- `paper-fig-<scenario>-<mode>`：该场景该模式的直接出图结果，内含 `summary.csv`、`task_completion_mean.png`、`distance_mean.png`、`event_ms_mean.png`、`coverage_mean.png`。
+- `paper-data-<scenario>-<mode>`：完整原始数据包，含 `raw/*.csv`、日志、`run_manifest.csv` 与 `fig/` 目录，适合复核。
+- `paper-summary-all`：所有场景合并后的总表与总图，内含 `paper_summary_all.csv` 及跨场景 PNG。
+
+如果你只是想拿图，直接下载 `paper-fig-*` 即可；如果你要复现实验或排查异常，再下载 `paper-data-*`。
 
 #### 常见问题（出图失败时优先排查）
 

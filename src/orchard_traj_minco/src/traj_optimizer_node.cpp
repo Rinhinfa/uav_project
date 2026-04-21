@@ -17,19 +17,25 @@ public:
     keyframe_stride_ = this->declare_parameter<int>("keyframe_stride", 3);
     sample_resolution_ = this->declare_parameter<double>("sample_resolution", 0.25);
     planner_mode_ = this->declare_parameter<std::string>("planner_mode", "proposed");
+    uav_count_ = this->declare_parameter<int>("uav_count", 3);
 
-    coarse_path_sub_ = this->create_subscription<nav_msgs::msg::Path>(
-      "/planner/coarse_waypoints",
-      10,
-      std::bind(&TrajOptimizerNode::onCoarsePath, this, std::placeholders::_1));
-    path_pub_ = this->create_publisher<nav_msgs::msg::Path>("/planner/global_path", 10);
+    debug_path_pub_ = this->create_publisher<nav_msgs::msg::Path>("/planner/global_path", 10);
+    for (int i = 1; i <= std::max(1, uav_count_); ++i) {
+      const auto uid = "uav_" + std::to_string(i);
+      coarse_path_subs_.push_back(this->create_subscription<nav_msgs::msg::Path>(
+        "/" + uid + "/planner/coarse_waypoints",
+        10,
+        [this, i](const nav_msgs::msg::Path::SharedPtr msg) { this->onCoarsePath(i - 1, msg); }));
+      path_pubs_.push_back(this->create_publisher<nav_msgs::msg::Path>(
+        "/" + uid + "/planner/global_path", 10));
+    }
     cost_srv_ = this->create_service<QueryCost>(
       "/traj/query_cost",
       std::bind(&TrajOptimizerNode::onQueryCost, this, std::placeholders::_1, std::placeholders::_2));
   }
 
 private:
-  void onCoarsePath(const nav_msgs::msg::Path::SharedPtr msg) {
+  void onCoarsePath(int uav_index, const nav_msgs::msg::Path::SharedPtr msg) {
     std::vector<geometry_msgs::msg::Point> points;
     points.reserve(msg->poses.size());
     for (const auto & pose : msg->poses) {
@@ -37,15 +43,18 @@ private:
     }
     nav_msgs::msg::Path path;
     path.header.stamp = this->now();
-    path.header.frame_id = "map";
+    path.header.frame_id = msg->header.frame_id.empty() ? "map" : msg->header.frame_id;
     if (planner_mode_ == "baseline") {
       path = *msg;
       path.header.stamp = this->now();
     } else {
       path.poses = smoothWithKeyframes(points);
     }
-    if (!path.poses.empty()) {
-      path_pub_->publish(path);
+    if (!path.poses.empty() && uav_index >= 0 &&
+      static_cast<size_t>(uav_index) < path_pubs_.size())
+    {
+      path_pubs_[static_cast<size_t>(uav_index)]->publish(path);
+      debug_path_pub_->publish(path);
     }
   }
 
@@ -93,10 +102,12 @@ private:
   }
 
   int keyframe_stride_;
+  int uav_count_;
   double sample_resolution_;
   std::string planner_mode_;
-  rclcpp::Subscription<nav_msgs::msg::Path>::SharedPtr coarse_path_sub_;
-  rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr path_pub_;
+  std::vector<rclcpp::Subscription<nav_msgs::msg::Path>::SharedPtr> coarse_path_subs_;
+  std::vector<rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr> path_pubs_;
+  rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr debug_path_pub_;
   rclcpp::Service<QueryCost>::SharedPtr cost_srv_;
 };
 

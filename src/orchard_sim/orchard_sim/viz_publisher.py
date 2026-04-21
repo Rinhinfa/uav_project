@@ -6,8 +6,10 @@ viz_publisher — 订阅仿真运行时数据并发布 RViz2 可视化消息。
   /fleet/states_json      (std_msgs/String JSON) — 无人机位置、电量、传感器类型
   /allocation/result_json (std_msgs/String JSON) — 任务分配结果及航点
   /sim/obstacles          (geometry_msgs/PoseArray) — 障碍物位置
-  /planner/global_path    (nav_msgs/Path) — 全局规划路径
-  /planner/local_path     (nav_msgs/Path) — 避障局部路径
+  /uav_i/planner/global_path (nav_msgs/Path) — 各机全局规划路径
+  /uav_i/planner/local_path  (nav_msgs/Path) — 各机局部避障路径
+  /planner/global_path    (nav_msgs/Path) — 兼容保留的 merged 全局调试镜像
+  /planner/local_path     (nav_msgs/Path) — 兼容保留的 merged 局部调试镜像
   /scheduler/events_log   (std_msgs/String JSON) — 事件日志
 
 发布:
@@ -67,8 +69,15 @@ class VizPublisher(Node):
         self._fleet: Dict[str, Any] = {}
         self._allocations: Dict[str, List[Tuple[float, float, float]]] = {}
         self._obstacles: List[Tuple[float, float]] = []
-        self._global_path: List[Tuple[float, float, float]] = []
-        self._local_path: List[Tuple[float, float, float]] = []
+        uav_count = max(1, int(self.get_parameter("uav_count").value))
+        self._global_paths: Dict[str, List[Tuple[float, float, float]]] = {
+            f"uav_{i + 1}": [] for i in range(uav_count)
+        }
+        self._local_paths: Dict[str, List[Tuple[float, float, float]]] = {
+            f"uav_{i + 1}": [] for i in range(uav_count)
+        }
+        self._legacy_global_path: List[Tuple[float, float, float]] = []
+        self._legacy_local_path: List[Tuple[float, float, float]] = []
         self._covered: Set[Tuple[int, int]] = set()
         self._latest_event: str = ""
         # 飞行轨迹历史：uid → [[x, y, z], ...]（来自 gz_path_follower）
@@ -80,8 +89,27 @@ class VizPublisher(Node):
         self.create_subscription(String, "/fleet/states_json", self._on_fleet, 10)
         self.create_subscription(String, "/allocation/result_json", self._on_alloc, 10)
         self.create_subscription(PoseArray, "/sim/obstacles", self._on_obstacles, 10)
-        self.create_subscription(Path, "/planner/global_path", self._on_global_path, 10)
-        self.create_subscription(Path, "/planner/local_path", self._on_local_path, 10)
+        self._path_subs = []
+        for i in range(uav_count):
+            uid = f"uav_{i + 1}"
+            self._path_subs.append(
+                self.create_subscription(
+                    Path,
+                    f"/{uid}/planner/global_path",
+                    lambda msg, uid=uid: self._on_global_path(uid, msg),
+                    10,
+                )
+            )
+            self._path_subs.append(
+                self.create_subscription(
+                    Path,
+                    f"/{uid}/planner/local_path",
+                    lambda msg, uid=uid: self._on_local_path(uid, msg),
+                    10,
+                )
+            )
+        self.create_subscription(Path, "/planner/global_path", self._on_legacy_global_path, 10)
+        self.create_subscription(Path, "/planner/local_path", self._on_legacy_local_path, 10)
         self.create_subscription(String, "/scheduler/events_log", self._on_event_log, 10)
         self.create_subscription(String, "/orchard_viz/trail_json", self._on_trail, 10)
 
@@ -123,14 +151,26 @@ class VizPublisher(Node):
     def _on_obstacles(self, msg: PoseArray) -> None:
         self._obstacles = [(p.position.x, p.position.y) for p in msg.poses]
 
-    def _on_global_path(self, msg: Path) -> None:
-        self._global_path = [
+    def _on_global_path(self, uid: str, msg: Path) -> None:
+        self._global_paths[uid] = [
             (ps.pose.position.x, ps.pose.position.y, ps.pose.position.z)
             for ps in msg.poses
         ]
 
-    def _on_local_path(self, msg: Path) -> None:
-        self._local_path = [
+    def _on_local_path(self, uid: str, msg: Path) -> None:
+        self._local_paths[uid] = [
+            (ps.pose.position.x, ps.pose.position.y, ps.pose.position.z)
+            for ps in msg.poses
+        ]
+
+    def _on_legacy_global_path(self, msg: Path) -> None:
+        self._legacy_global_path = [
+            (ps.pose.position.x, ps.pose.position.y, ps.pose.position.z)
+            for ps in msg.poses
+        ]
+
+    def _on_legacy_local_path(self, msg: Path) -> None:
+        self._legacy_local_path = [
             (ps.pose.position.x, ps.pose.position.y, ps.pose.position.z)
             for ps in msg.poses
         ]
@@ -167,6 +207,17 @@ class VizPublisher(Node):
         m.action = Marker.ADD
         m.pose.orientation.w = 1.0
         return m
+
+    @staticmethod
+    def _uav_index(uid: str, fallback: int = 0) -> int:
+        try:
+            return max(0, int(uid.split("_")[-1]) - 1)
+        except (ValueError, IndexError):
+            return max(0, fallback)
+
+    def _uav_colour(self, uid: str, fallback: int = 0) -> Tuple[float, float, float]:
+        idx = self._uav_index(uid, fallback)
+        return _UAV_COLOURS[idx % len(_UAV_COLOURS)]
 
     def _publish_markers(self) -> None:
         ma = MarkerArray()
@@ -279,11 +330,12 @@ class VizPublisher(Node):
             ma.markers.append(bar)
 
         # ── 4. 任务分配航线（各 UAV 彩色线段 + 航点球） ─────────────────────
-        for i, (uid, pts) in enumerate(self._allocations.items()):
+        for i, uid in enumerate(sorted(self._allocations.keys(), key=lambda x: self._uav_index(x))):
+            pts = self._allocations[uid]
             if len(pts) < 2:
                 continue
-            idx = int(uid.split("_")[-1]) - 1 if "_" in uid else i
-            cr, cg, cb = _UAV_COLOURS[idx % len(_UAV_COLOURS)]
+            idx = self._uav_index(uid, i)
+            cr, cg, cb = self._uav_colour(uid, i)
 
             line = self._base_marker("alloc_path", idx, Marker.LINE_STRIP)
             line.scale.x = 0.14
@@ -303,23 +355,61 @@ class VizPublisher(Node):
                 dot.lifetime.sec = 6
                 ma.markers.append(dot)
 
-        # ── 5. 全局路径（白色细线） ──────────────────────────────────────────
-        if len(self._global_path) >= 2:
-            gpath = self._base_marker("global_path", 0, Marker.LINE_STRIP)
+        # ── 5. 全局路径（按 UAV 分色；若旧链路仍在，仅回退显示 merged 镜像） ──
+        any_global = False
+        for i, uid in enumerate(sorted(self._global_paths.keys(), key=lambda x: self._uav_index(x))):
+            pts = self._global_paths.get(uid, [])
+            if len(pts) < 2:
+                continue
+            any_global = True
+            cr, cg, cb = self._uav_colour(uid, i)
+            gpath = self._base_marker("global_path", self._uav_index(uid, i), Marker.LINE_STRIP)
+            gpath.scale.x = 0.08
+            gpath.color = _c(
+                min(1.0, 0.35 + 0.65 * cr),
+                min(1.0, 0.35 + 0.65 * cg),
+                min(1.0, 0.35 + 0.65 * cb),
+                0.72,
+            )
+            gpath.lifetime.sec = 2
+            for px, py, pz in pts:
+                gpath.points.append(_pt(px, py, pz))
+            ma.markers.append(gpath)
+        if not any_global and len(self._legacy_global_path) >= 2:
+            gpath = self._base_marker("global_path_legacy", 0, Marker.LINE_STRIP)
             gpath.scale.x = 0.07
             gpath.color = _c(0.88, 0.88, 0.88, 0.75)
             gpath.lifetime.sec = 2
-            for px, py, pz in self._global_path:
+            for px, py, pz in self._legacy_global_path:
                 gpath.points.append(_pt(px, py, pz))
             ma.markers.append(gpath)
 
-        # ── 6. 局部避障路径（黄色线） ────────────────────────────────────────
-        if len(self._local_path) >= 2:
-            lpath = self._base_marker("local_path", 0, Marker.LINE_STRIP)
+        # ── 6. 局部避障路径（按 UAV 分色高亮；若旧链路仍在，仅回退 merged） ──
+        any_local = False
+        for i, uid in enumerate(sorted(self._local_paths.keys(), key=lambda x: self._uav_index(x))):
+            pts = self._local_paths.get(uid, [])
+            if len(pts) < 2:
+                continue
+            any_local = True
+            cr, cg, cb = self._uav_colour(uid, i)
+            lpath = self._base_marker("local_path", self._uav_index(uid, i), Marker.LINE_STRIP)
+            lpath.scale.x = 0.11
+            lpath.color = _c(
+                min(1.0, 0.45 * cr + 0.55),
+                min(1.0, 0.45 * cg + 0.55),
+                min(1.0, 0.35 * cb + 0.15),
+                0.95,
+            )
+            lpath.lifetime.sec = 2
+            for px, py, pz in pts:
+                lpath.points.append(_pt(px, py, pz))
+            ma.markers.append(lpath)
+        if not any_local and len(self._legacy_local_path) >= 2:
+            lpath = self._base_marker("local_path_legacy", 0, Marker.LINE_STRIP)
             lpath.scale.x = 0.10
             lpath.color = _c(1.0, 0.92, 0.20, 0.95)
             lpath.lifetime.sec = 2
-            for px, py, pz in self._local_path:
+            for px, py, pz in self._legacy_local_path:
                 lpath.points.append(_pt(px, py, pz))
             ma.markers.append(lpath)
 

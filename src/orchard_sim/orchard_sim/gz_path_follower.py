@@ -4,12 +4,13 @@ import math
 from typing import Dict, List, Tuple
 
 from geometry_msgs.msg import PoseArray
+from nav_msgs.msg import Path
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSDurabilityPolicy, QoSHistoryPolicy, QoSProfile, QoSReliabilityPolicy
 from ros_gz_interfaces.msg import Entity
 from ros_gz_interfaces.srv import SetEntityPose
-from std_msgs.msg import String
+from std_msgs.msg import String, UInt64
 
 # 与 task_allocator 保持一致：确保晚启动时也能收到已发布的分配结果
 _TRANSIENT_QOS = QoSProfile(
@@ -36,7 +37,9 @@ class GzPathFollower(Node):
         self.declare_parameter("arrive_tolerance", 0.35)
         self.declare_parameter("landing_z", 0.25)
         self.declare_parameter("max_flight_time_sec", 1800.0)
+        # 仅保留兼容性；实际执行链路改为消费 /uav_i/cmd_path
         self.declare_parameter("allocation_topic", "/allocation/result_json")
+        self.declare_parameter("planner_mode", "proposed")
         # 轨迹记录：每隔多远记录一个点（m）
         self.declare_parameter("trail_step_m", 0.4)
         # 每架无人机保留的最大轨迹点数
@@ -60,7 +63,8 @@ class GzPathFollower(Node):
         self._arrive_tol = float(self.get_parameter("arrive_tolerance").value)
         self._landing_z = float(self.get_parameter("landing_z").value)
         self._max_flight_time = float(self.get_parameter("max_flight_time_sec").value)
-        allocation_topic = str(self.get_parameter("allocation_topic").value)
+        self._planner_mode = str(self.get_parameter("planner_mode").value).lower()
+        self._use_canopy_avoidance = self._planner_mode != "baseline"
         self._service_name = f"/world/{world_name}/set_pose"
         self._trail_step = float(self.get_parameter("trail_step_m").value)
         self._trail_max = int(self.get_parameter("trail_max_pts").value)
@@ -85,6 +89,8 @@ class GzPathFollower(Node):
         self._uav_spawn_xy: Dict[str, Tuple[float, float]] = {}
         self._uav_paths: Dict[str, List[Tuple[float, float, float]]] = {}
         self._path_index: Dict[str, int] = {}
+        self._path_signatures: Dict[str, Tuple[Tuple[float, float, float], ...]] = {}
+        self._force_restart_on_next_path: Dict[str, bool] = {}
         self._flight_time: Dict[str, float] = {}
         self._timeout_landed: Dict[str, bool] = {}
         # 轨迹历史：uid → [(x, y, z), ...]
@@ -94,7 +100,18 @@ class GzPathFollower(Node):
         self._warned_missing_pose_service = False
         self._init_spawn_states()
 
-        self.create_subscription(String, allocation_topic, self._on_allocation, _TRANSIENT_QOS)
+        self._cmd_path_subs = []
+        for i in range(max(self._uav_count, 1)):
+            uid = f"uav_{i+1}"
+            self._cmd_path_subs.append(
+                self.create_subscription(
+                    Path,
+                    f"/{uid}/cmd_path",
+                    lambda msg, uid=uid: self._on_cmd_path(uid, msg),
+                    10,
+                )
+            )
+        self.create_subscription(UInt64, "/allocation/mission_id", self._on_mission_id, 10)
         self.create_subscription(PoseArray, "/sim/spawn_poses", self._on_spawn_poses, _TRANSIENT_QOS)
         self._client = self.create_client(SetEntityPose, self._service_name)
         self._trail_pub = self.create_publisher(String, "/orchard_viz/trail_json", 10)
@@ -102,7 +119,7 @@ class GzPathFollower(Node):
         self._positions_pub = self.create_publisher(String, "/sim/uav_positions_json", 10)
         self.create_timer(1.0 / max(hz, 1.0), self._on_timer)
         self.get_logger().info(
-            f"Following {allocation_topic}, writing fleet pose to {self._service_name}"
+            f"Following per-UAV /uav_i/cmd_path topics, writing fleet pose to {self._service_name}"
         )
 
     def _init_spawn_states(self) -> None:
@@ -119,6 +136,8 @@ class GzPathFollower(Node):
             self._uav_spawn_xy[uid] = (self._start_x, y)
             self._uav_paths[uid] = []
             self._path_index[uid] = 0
+            self._path_signatures[uid] = ()
+            self._force_restart_on_next_path[uid] = False
             self._flight_time[uid] = 0.0
             self._timeout_landed[uid] = False
             self._trail[uid] = [[self._start_x, y, self._cruise_z]]
@@ -138,33 +157,71 @@ class GzPathFollower(Node):
             self._uav_spawn_xy[uid] = (x, y)
             self._trail[uid] = [[x, y, z]]
 
-    def _on_allocation(self, msg: String) -> None:
-        try:
-            payload = json.loads(msg.data)
-        except json.JSONDecodeError:
-            return
-        mission_id = int(payload.get("mission_id", -1))
+    def _on_mission_id(self, msg: UInt64) -> None:
+        mission_id = int(msg.data)
         if mission_id == self._last_mission_id:
             return
         self._last_mission_id = mission_id
-        allocations = payload.get("allocations", [])
-        for alloc in allocations:
-            uid = str(alloc.get("uav_id", "")).strip()
-            if uid not in self._uav_states:
+        for uid in self._uav_states.keys():
+            if self._timeout_landed.get(uid, False):
                 continue
-            points = []
-            for pt in alloc.get("coarse_waypoints", []):
-                points.append(
-                    (
-                        float(pt.get("x", self._uav_states[uid]["x"])),
-                        float(pt.get("y", self._uav_states[uid]["y"])),
-                        float(pt.get("z", self._cruise_z)),
-                    )
-                )
-            self._uav_paths[uid] = points
+            self._path_signatures[uid] = ()
+            self._force_restart_on_next_path[uid] = True
+
+    def _on_cmd_path(self, uid: str, msg: Path) -> None:
+        if uid not in self._uav_states or not msg.poses or self._timeout_landed.get(uid, False):
+            return
+        points = [
+            (
+                float(ps.pose.position.x),
+                float(ps.pose.position.y),
+                float(ps.pose.position.z if abs(float(ps.pose.position.z)) > 1e-6 else self._cruise_z),
+            )
+            for ps in msg.poses
+        ]
+        signature = self._path_signature(points)
+        current_signature = self._path_signatures.get(uid, ())
+        current_path = self._uav_paths.get(uid, [])
+        current_index = self._path_index.get(uid, 0)
+        if signature == current_signature and current_index < len(current_path):
+            return
+        self._uav_paths[uid] = points
+        if self._force_restart_on_next_path.get(uid, False) and self._should_restart_from_start(uid, points):
             self._path_index[uid] = 0
-            st = self._uav_states[uid]
-            self._uav_spawn_xy[uid] = (st["x"], st["y"])
+        else:
+            self._path_index[uid] = self._nearest_path_index(uid, points)
+        self._path_signatures[uid] = signature
+        self._force_restart_on_next_path[uid] = False
+
+    @staticmethod
+    def _path_signature(points: List[Tuple[float, float, float]]) -> Tuple[Tuple[float, float, float], ...]:
+        return tuple((round(x, 3), round(y, 3), round(z, 3)) for x, y, z in points)
+
+    def _nearest_path_index(self, uid: str, points: List[Tuple[float, float, float]]) -> int:
+        state = self._uav_states.get(uid)
+        if not state or not points:
+            return 0
+        sx = float(state["x"])
+        sy = float(state["y"])
+        sz = float(state["z"])
+        best_idx = 0
+        best_dist = float("inf")
+        for idx, (px, py, pz) in enumerate(points):
+            dist = math.dist((sx, sy, sz), (px, py, pz))
+            if dist < best_dist:
+                best_dist = dist
+                best_idx = idx
+        return best_idx
+
+    def _should_restart_from_start(self, uid: str, points: List[Tuple[float, float, float]]) -> bool:
+        state = self._uav_states.get(uid)
+        if not state or len(points) < 2:
+            return False
+        current = (float(state["x"]), float(state["y"]), float(state["z"]))
+        start_dist = math.dist(current, points[0])
+        end_dist = math.dist(current, points[-1])
+        restart_thresh = max(self._arrive_tol * 2.0, 0.75)
+        return end_dist <= restart_thresh and start_dist > restart_thresh
 
     def _on_timer(self) -> None:
         service_ready = self._client.wait_for_service(timeout_sec=0.0)
@@ -215,10 +272,11 @@ class GzPathFollower(Node):
             if dist > 1e-6:
                 ux = dx / dist
                 uy = dy / dist
-                # 绕开路径上的非目标树树冠
-                ux, uy = self._steer_around_trees(
-                    state["x"], state["y"], state["z"], ux, uy, tx, ty
-                )
+                if self._use_canopy_avoidance:
+                    # proposed 模式启用树冠局部绕障；baseline 直接按粗路径飞行
+                    ux, uy = self._steer_around_trees(
+                        state["x"], state["y"], state["z"], ux, uy, tx, ty
+                    )
                 state["x"] += ux * step
                 state["y"] += uy * step
                 state["yaw"] = math.atan2(uy, ux)

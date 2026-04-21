@@ -132,11 +132,46 @@ jobs:
             --modes "${MODE}" \
             --scenario-name "${SCENARIO_NAME}"
 
-      - name: Upload scenario-mode artifacts
+      - name: Write scenario-mode summary
+        if: always()
+        env:
+          SCENARIO_NAME: ${{ matrix.scenario.name }}
+          MODE: ${{ matrix.mode }}
+        run: |
+          set -euo pipefail
+          FIG_DIR="${GITHUB_WORKSPACE}/paper_artifacts/${SCENARIO_NAME}/${MODE}/fig"
+          {
+            echo "### ${SCENARIO_NAME} / ${MODE}"
+            if [ ! -d "${FIG_DIR}" ]; then
+              echo "- report directory missing: \`${FIG_DIR}\`"
+              echo
+              exit 0
+            fi
+            echo "- direct figures artifact: \`paper-fig-${SCENARIO_NAME}-${MODE}\`"
+            echo "- full raw+fig artifact: \`paper-data-${SCENARIO_NAME}-${MODE}\`"
+            echo "- generated files:"
+            for name in summary.csv task_completion_mean.png distance_mean.png event_ms_mean.png coverage_mean.png; do
+              if [ -f "${FIG_DIR}/${name}" ]; then
+                echo "  - \`fig/${name}\`"
+              fi
+            done
+            echo
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Upload scenario-mode figures
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: paper-${{ matrix.scenario.name }}-${{ matrix.mode }}
+          name: paper-fig-${{ matrix.scenario.name }}-${{ matrix.mode }}
+          path: paper_artifacts/${{ matrix.scenario.name }}/${{ matrix.mode }}/fig
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Upload scenario-mode data
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: paper-data-${{ matrix.scenario.name }}-${{ matrix.mode }}
           path: paper_artifacts/${{ matrix.scenario.name }}/${{ matrix.mode }}
           if-no-files-found: warn
           retention-days: 30
@@ -169,6 +204,28 @@ jobs:
             --manifest-glob "${GITHUB_WORKSPACE}/all_artifacts/**/run_manifest.csv" \
             --output-dir "${GITHUB_WORKSPACE}/paper_summary_all" \
             --modes baseline,proposed
+
+      - name: Write merged summary
+        if: always()
+        run: |
+          set -euo pipefail
+          OUT_DIR="${GITHUB_WORKSPACE}/paper_summary_all"
+          {
+            echo "## Merged Paper Summary"
+            if [ ! -d "${OUT_DIR}" ]; then
+              echo "- merged output directory missing: \`${OUT_DIR}\`"
+              echo
+              exit 0
+            fi
+            echo "- artifact: \`paper-summary-all\`"
+            echo "- generated files:"
+            for name in paper_summary_all.csv task_completion_mean.png distance_mean.png event_ms_mean.png coverage_mean.png; do
+              if [ -f "${OUT_DIR}/${name}" ]; then
+                echo "  - \`${name}\`"
+              fi
+            done
+            echo
+          } >> "${GITHUB_STEP_SUMMARY}"
 
       - name: Upload merged summary
         uses: actions/upload-artifact@v4

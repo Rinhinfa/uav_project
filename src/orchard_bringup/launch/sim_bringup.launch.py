@@ -110,6 +110,7 @@ def generate_launch_description() -> LaunchDescription:
                 parameters=[
                     {
                         "uav_count": uav_count,
+                        "planner_mode": pipeline_mode,
                         "speed_mps": uav_speed_mps,
                         "max_flight_time_sec": max_flight_time_sec,
                         "tree_rows": rows,
@@ -157,15 +158,20 @@ def generate_launch_description() -> LaunchDescription:
                 package="orchard_traj_minco",
                 executable="traj_optimizer_node",
                 name="traj_optimizer_node",
-                parameters=[{"planner_mode": pipeline_mode}],
+                parameters=[{"planner_mode": pipeline_mode, "uav_count": uav_count}],
             ),
             Node(
                 package="orchard_ego_bridge",
                 executable="ego_local_planner_stub_node",
                 name="ego_local_planner_stub",
-                parameters=[{"planner_mode": pipeline_mode}],
+                parameters=[{"planner_mode": pipeline_mode, "uav_count": uav_count}],
             ),
-            Node(package="orchard_ego_bridge", executable="planning_arbitrator_node", name="planning_arbitrator"),
+            Node(
+                package="orchard_ego_bridge",
+                executable="planning_arbitrator_node",
+                name="planning_arbitrator",
+                parameters=[{"uav_count": uav_count}],
+            ),
             Node(
                 package="orchard_evaluation",
                 executable="metrics_aggregator",

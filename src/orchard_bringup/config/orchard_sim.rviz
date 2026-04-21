@@ -241,7 +241,7 @@ Visualization Manager:
       Length: 0.3
       Line Style: Lines
       Line Width: 0.06
-      Name: Global Path
+      Name: Global Path Mirror (Merged Debug)
       Offset:
         X: 0
         Y: 0
@@ -258,7 +258,7 @@ Visualization Manager:
         History Policy: Keep Last
         Reliability Policy: Reliable
         Value: /planner/global_path
-      Value: true
+      Value: false
 
     - Class: rviz_default_plugins/Path
       Buffer Length: 1
@@ -269,7 +269,7 @@ Visualization Manager:
       Length: 0.3
       Line Style: Lines
       Line Width: 0.08
-      Name: Local Path (Avoidance)
+      Name: Local Path Mirror (Merged Debug)
       Offset:
         X: 0
         Y: 0
@@ -286,7 +286,7 @@ Visualization Manager:
         History Policy: Keep Last
         Reliability Policy: Reliable
         Value: /planner/local_path
-      Value: true
+      Value: false
 
   Enabled: true
   Global Options:
